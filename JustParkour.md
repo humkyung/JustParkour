@@ -1,6 +1,6 @@
 # JustParkour
 
-LÖVE2D로 만든 단일 파일 Parkour 게임. 모든 로직은 [main.lua](main.lua)에 있습니다.
+LÖVE2D로 만든 단일 파일 Parkour 횡스크롤 게임. 모든 로직은 [main.lua](main.lua)에 있습니다.
 
 ## 플레이어
 - 스틱맨
