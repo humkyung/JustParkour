@@ -271,14 +271,18 @@ end
 
 local function updatePlay(dt)
     if player.state ~= "climb" then
+        local prevState = player.state
         if player.onGround then
             updateGroundedInput()
         else
-            -- airborne: stay in jump animation; allow facing flip without altering velocity
             local kb = love.keyboard.isDown
             if kb("d") then player.direction = 1
             elseif kb("a") then player.direction = -1 end
             player.state = "jump"
+        end
+        if player.state ~= prevState then
+            player.currentFrame = 1
+            player.animTimer    = 0
         end
     end
 
