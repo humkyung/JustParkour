@@ -8,20 +8,39 @@
 local SCREEN_W, SCREEN_H = 800, 450
 local GROUND_Y           = 360
 local GRAVITY            = 1500
-local JUMP_VY            = -520
-local JUMP_VX_BOOST      = 70
-local RUN_SPEED          = 220
+local JUMP_VY            = -480           -- W (straight-up) vertical impulse; tall enough to clear typical obstacles
+local JUMP_FWD_VX        = 400            -- W+D / W+A horizontal velocity (reduced from 480 for shorter jump distance)
+local JUMP_FWD_VY        = -400           -- W+D / W+A vertical velocity (matches |vx| -> 45-degree initial angle)
+local RUN_SPEED          = 240
 local CRAWL_SPEED        = 90
 
 local PLAYER_HALF_W      = 12
 local PLAYER_TALL_H      = 52
 local PLAYER_LOW_H       = 24
 
+-- Per spec, any airborne side touch triggers auto-climb. CLIMB_REACH is the
+-- horizontal "wingspan" added to the player box on the FACING side only, so
+-- W (vertical) jumps next to a wall grab it without needing to penetrate, but
+-- stepping off the far edge of an obstacle the player was standing on doesn't
+-- accidentally re-grab it from behind.
+local CLIMB_REACH        = 6              -- px of grab reach beyond the player's facing side
+
+-- Camera follow uses a max speed so fast horizontal motion (W+D / W+A jumps)
+-- visibly outpaces the camera. We use a higher cap on the ground (matches run)
+-- and a much lower cap in the air so the 45-degree jump arc is clearly visible.
+local CAMERA_FOLLOW_SPEED_GROUND = 320    -- >= RUN_SPEED; ground tracking stays tight
+local CAMERA_FOLLOW_SPEED_AIR    = 140    -- << JUMP_FWD_VX; jump arc reads as a forward leap
+
 local gameState   -- "menu" | "play" | "win"
 local camera = { x = 0 }
 local player = {}
 local maps = {}
 local currentMapIdx = 1
+local jumpRequested = false               -- set by love.keypressed("w"), consumed in love.update
+-- Keys received via love.keypressed during the current frame. Used as a fallback
+-- alongside love.keyboard.isDown so a quick W+D / W+A tap (where the modifier key
+-- might already be released by the time love.update runs) still registers as held.
+local thisFrameKeys = {}
 
 -- ============ animation setup ============
 local function setupAnimations()
@@ -33,7 +52,7 @@ local function setupAnimations()
         jump  = { row = 1, frames = {1, 2, 3, 4}, speed = 0.15, loop = false },
         duck  = { row = 2, frames = {1},          speed = 0.20, loop = true  },
         crawl = { row = 2, frames = {2, 3, 4, 3}, speed = 0.15, loop = true  },
-        climb = { row = 3, frames = {1, 2, 3, 4}, speed = 0.12, loop = false },
+        climb = { row = 3, frames = {1, 2, 3, 4}, speed = 0.18, loop = false },
     }
     player.quads = {}
     for stateName, anim in pairs(player.animations) do
@@ -126,13 +145,32 @@ local function getPlayerBox()
     return player.x - PLAYER_HALF_W, player.y - h, PLAYER_HALF_W * 2, h
 end
 
+local function isKeyHeld(key)
+    -- True if the key is currently held OR was pressed at any point during
+    -- this frame's love.keypressed events. Lets brief W+D / W+A taps register
+    -- the modifier even if the user has already released it by the time
+    -- love.update runs.
+    return love.keyboard.isDown(key) or thisFrameKeys[key] == true
+end
+
 local function startClimb(obs)
     player.state        = "climb"
     player.climbTarget  = obs
+    player.climbStartY  = player.y
     player.currentFrame = 1
     player.animTimer    = 0
     player.vx           = 0
     player.vy           = 0
+    -- Snap horizontally to the wall edge so the climb starts visibly attached
+    -- to the obstacle rather than penetrating it.
+    if player.direction == 1 then
+        player.x = obs.x - PLAYER_HALF_W
+    else
+        player.x = obs.x + obs.w + PLAYER_HALF_W
+    end
+    -- Capture the start X (wall-outside) so updateAnimation can interpolate
+    -- horizontally toward the top-inside position during the pull-up phase.
+    player.climbStartX = player.x
 end
 
 -- ============ per-frame state derivation from input ============
@@ -169,17 +207,34 @@ local function physicsStep(dt)
 
     do
         local px, py, pw, ph = getPlayerBox()
-        for _, obs in ipairs(map.obstacles) do
-            if rectOverlap(px, py, pw, ph, obs.x, obs.y, obs.w, obs.h) then
-                if not player.onGround then
-                    -- jumping into the side of an obstacle -> auto-climb to top
+
+        -- Airborne climb detection: extend the player box only on the FACING
+        -- side. Touching a wall in front (W, W+D, W+A) still auto-climbs, but
+        -- a player who just stepped off the far edge of an obstacle won't
+        -- have their trailing side reach back into the obstacle and re-grab it.
+        if not player.onGround then
+            local rx, rw
+            if player.direction == 1 then
+                rx = px
+                rw = pw + CLIMB_REACH
+            else
+                rx = px - CLIMB_REACH
+                rw = pw + CLIMB_REACH
+            end
+            for _, obs in ipairs(map.obstacles) do
+                if rectOverlap(rx, py, rw, ph, obs.x, obs.y, obs.w, obs.h) then
                     startClimb(obs)
                     return
-                else
-                    player.x  = oldX
-                    player.vx = 0
-                    break
                 end
+            end
+        end
+
+        -- Strict box check for movement blocking on the ground.
+        for _, obs in ipairs(map.obstacles) do
+            if rectOverlap(px, py, pw, ph, obs.x, obs.y, obs.w, obs.h) then
+                player.x  = oldX
+                player.vx = 0
+                break
             end
         end
     end
@@ -218,6 +273,35 @@ end
 local function updateAnimation(dt)
     local anim = player.animations[player.state]
     player.animTimer = player.animTimer + dt
+
+    -- Smoothly raise the player up the wall during the climb animation so the
+    -- figure visibly ascends alongside the obstacle, then pulls onto the top
+    -- in the final phase. Without this, the climb animation just plays in place.
+    if player.state == "climb" and player.climbTarget then
+        local obs    = player.climbTarget
+        local total  = anim.speed * #anim.frames
+        local elapsed = (player.currentFrame - 1) * anim.speed + player.animTimer
+        local p = elapsed / total
+        if p < 0 then p = 0 elseif p > 1 then p = 1 end
+
+        -- Y: linear ascent from grab height to obstacle top across the whole climb.
+        local startY = player.climbStartY or player.y
+        player.y = startY + (obs.y - startY) * p
+
+        -- X: stay on the wall side for the first 75% (climbing up), then pull
+        -- onto the top in the last 25% (matches the climb-4 "stand on top" frame).
+        local startX = player.climbStartX or player.x
+        local endX
+        if player.direction == 1 then
+            endX = obs.x + PLAYER_HALF_W + 2
+        else
+            endX = obs.x + obs.w - PLAYER_HALF_W - 2
+        end
+        local pX = 0
+        if p > 0.75 then pX = (p - 0.75) / 0.25 end
+        player.x = startX + (endX - startX) * pX
+    end
+
     if player.animTimer >= anim.speed then
         player.animTimer = player.animTimer - anim.speed
         player.currentFrame = player.currentFrame + 1
@@ -246,13 +330,28 @@ local function updateAnimation(dt)
     end
 end
 
-local function updateCamera()
+local function updateCamera(dt)
     local screenX = player.x - camera.x
+    local target = camera.x
     if screenX > SCREEN_W * 0.75 then
-        camera.x = player.x - SCREEN_W * 0.75
+        target = player.x - SCREEN_W * 0.75
     elseif screenX < SCREEN_W * 0.25 then
-        camera.x = player.x - SCREEN_W * 0.25
+        target = player.x - SCREEN_W * 0.25
     end
+
+    -- Tighter follow on the ground; slower follow in the air so the 45-degree
+    -- jump arc is clearly visible as the player visibly outpaces the camera.
+    local maxSpeed = player.onGround and CAMERA_FOLLOW_SPEED_GROUND or CAMERA_FOLLOW_SPEED_AIR
+    local diff = target - camera.x
+    local maxStep = maxSpeed * dt
+    if math.abs(diff) <= maxStep then
+        camera.x = target
+    elseif diff > 0 then
+        camera.x = camera.x + maxStep
+    else
+        camera.x = camera.x - maxStep
+    end
+
     if camera.x < 0 then camera.x = 0 end
     local map = maps[currentMapIdx]
     local maxCam = map.endX - SCREEN_W
@@ -288,8 +387,40 @@ local function updatePlay(dt)
 
     physicsStep(dt)
     updateAnimation(dt)
-    updateCamera()
+    updateCamera(dt)
     checkGoal()
+end
+
+-- Triggers a jump using the keyboard state at the moment update runs (i.e.,
+-- AFTER all of this frame's key events have been processed). This eliminates
+-- the race condition where a simultaneous W+D press could resolve W's
+-- keypressed event before D's was polled, missing the forward boost.
+local function triggerJumpFromState()
+    if not (player.onGround and player.state ~= "climb") then return end
+    player.onGround  = false
+    if isKeyHeld("d") then
+        -- W+D -> forward jump at 45 degrees up-right (|vx| == |vy|),
+        -- shorter range than a pure-vertical jump.
+        player.direction = 1
+        player.vx        = JUMP_FWD_VX
+        player.vy        = JUMP_FWD_VY
+    elseif isKeyHeld("a") then
+        -- W+A -> backward jump at 45 degrees up-left, same shorter range.
+        player.direction = -1
+        player.vx        = -JUMP_FWD_VX
+        player.vy        = JUMP_FWD_VY
+    else
+        -- W only -> straight up jump (taller, no horizontal travel).
+        player.vx        = 0
+        player.vy        = JUMP_VY
+    end
+    player.state        = "jump"
+    player.currentFrame = 1
+    player.animTimer    = 0
+    if player.sfxJump then
+        player.sfxJump:stop()
+        player.sfxJump:play()
+    end
 end
 
 -- ============ drawing ============
@@ -408,8 +539,22 @@ end
 function love.update(dt)
     if dt > 0.05 then dt = 0.05 end
     if gameState == "play" then
+        -- Process any queued jump request now that all of this frame's key
+        -- events have been polled. triggerJumpFromState uses isKeyHeld which
+        -- consults both love.keyboard.isDown and thisFrameKeys, so a quick
+        -- W+D / W+A tap still registers the modifier even if it has already
+        -- been released by the time this runs.
+        if jumpRequested then
+            jumpRequested = false
+            triggerJumpFromState()
+        end
         updatePlay(dt)
+    else
+        -- Drop stale requests if the game is not in play.
+        jumpRequested = false
     end
+    -- Clear per-frame key cache after all input-dependent logic has run.
+    for k in pairs(thisFrameKeys) do thisFrameKeys[k] = nil end
 end
 
 function love.draw()
@@ -430,6 +575,9 @@ function love.draw()
 end
 
 function love.keypressed(key)
+    -- Record every key pressed during this frame so input checks elsewhere
+    -- (notably the jump trigger) can see brief taps reliably.
+    thisFrameKeys[key] = true
     if gameState == "menu" then
         if key == "escape" then
             love.event.quit()
@@ -445,26 +593,10 @@ function love.keypressed(key)
             gameState = "menu"
         elseif key == "r" then
             loadMap(currentMapIdx)
-        elseif key == "w" and player.onGround and player.state ~= "climb" then
-            local kb = love.keyboard.isDown
-            player.vy        = JUMP_VY
-            player.onGround  = false
-            if kb("d") then
-                player.direction = 1
-                player.vx        = RUN_SPEED + JUMP_VX_BOOST
-            elseif kb("a") then
-                player.direction = -1
-                player.vx        = -(RUN_SPEED + JUMP_VX_BOOST)
-            else
-                player.vx = 0
-            end
-            player.state        = "jump"
-            player.currentFrame = 1
-            player.animTimer    = 0
-            if player.sfxJump then
-                player.sfxJump:stop()
-                player.sfxJump:play()
-            end
+        elseif key == "w" then
+            -- Defer jump trigger to love.update so that simultaneous W+D presses
+            -- always see kb("d") = true regardless of the order events are polled.
+            jumpRequested = true
         end
     elseif gameState == "win" then
         if key == "return" or key == "kpenter" or key == "space" then
