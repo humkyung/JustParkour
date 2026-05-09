@@ -1,0 +1,88 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 프로젝트 개요
+
+JustParkour는 LÖVE2D(11.x) 기반의 단일 파일 횡스크롤 파쿠르 게임입니다. 게임플레이 로직, 물리, 애니메이션, 입력, 그리기, 맵 데이터가 모두 [main.lua](main.lua) 한 파일에 있습니다. [JustParkour.md](JustParkour.md)는 한국어로 작성된 설계 명세서로, 조작 키, 액션 목록, 그리고 변경 작업의 기준이 되는 버그/개선 사항 체크리스트를 담고 있습니다. 의도된 동작에 대해서는 이 문서를 기준 문서로 사용하세요.
+
+## 실행 방법
+
+```
+love .              # love가 PATH에 등록되어 있는 경우
+run.bat             # Windows: love를 먼저 시도하고, 없으면 C:\Program Files\LOVE\love.exe 사용
+```
+
+빌드 단계와 테스트 스위트는 없습니다. 변경 사항은 직접 게임을 플레이하면서 검증해야 합니다.
+
+린터로 [luacheck](https://github.com/lunarmodules/luacheck)을 사용합니다. 설정은 [.luacheckrc](.luacheckrc)에 있습니다.
+
+```
+luacheck main.lua          # 전체 검사
+luacheck main.lua -q       # 경고/에러만 출력
+```
+
+코드를 수정한 뒤에는 luacheck를 한 번 돌려 새로 생긴 경고가 없는지 확인하세요. LÖVE 콜백(`love.load/update/draw/keypressed`)은 전역으로 정의되어야 하므로 `.luacheckrc`에서 명시적으로 허용되어 있습니다 — 새 콜백을 추가할 때 unused-global 경고가 뜨면 진짜 오타인지 먼저 의심한 뒤, 정당한 콜백이라면 설정을 갱신하세요.
+
+`conf.lua`에서 LÖVE 모듈 중 `physics`, `video`, `touch`, `joystick`이 비활성화되어 있습니다. 게임패드/터치 입력 등을 추가하려면 [conf.lua](conf.lua)를 먼저 수정해야 합니다.
+
+선택적 점프 효과음은 `assets/jump.wav`가 있으면 자동으로 로드되고, 없으면 `assets/jump.ogg`를 시도합니다. 둘 다 없으면 무음으로 동작합니다([main.lua:529](main.lua:529)).
+
+## 스프라이트시트 재생성
+
+`assets/spritesheet.png`는 64×64 셀로 구성된 256×256 그리드이며 레이아웃은 다음과 같습니다.
+
+- Row 0: `idle`, `run-2`, `run-3`, `run-4`
+- Row 1: `jump-1..4`
+- Row 2: `duck`, `crawl-2`, `crawl-3`, `crawl-4`
+- Row 3: `climb-1..4`
+
+시트의 스틱맨은 **오른쪽**을 향하고 있으며, `player.direction = -1`일 때 `love.graphics.draw`에서 음수 X-스케일로 뒤집힙니다. 시트 레이아웃을 변경하면 `setupAnimations()`(행/프레임)와 `drawPlayer()`(원점 오프셋)을 함께 업데이트해야 합니다. 시트 자체를 다시 생성하려면 `scripts/gen_spritesheet.py`도 동일한 레이아웃으로 맞춰서 수정해야 합니다.
+
+## 단일 파일에서는 한눈에 보이지 않는 아키텍처 노트
+
+### 단일 파일 레이아웃
+
+`main.lua`는 위에서 아래로 다음 순서로 구성되어 있습니다: 상수 → 애니메이션 셋업 → 맵 데이터 → 레벨 로딩 → 충돌 헬퍼 → 입력 → 물리 → 애니메이션 틱 → 카메라 → 목표(goal) → 프레임 업데이트 → 그리기 → LÖVE 콜백. LÖVE 콜백(`love.load/update/draw/keypressed`)은 파일 맨 아래에 위치하며 위쪽의 헬퍼 함수들을 호출합니다.
+
+### 게임 상태
+
+`gameState`는 `"menu" | "play" | "win"` 중 하나입니다. `love.update`와 `love.draw`는 이 값에 따라 분기합니다. 메뉴에서 `1`–`#maps` 숫자 키는 `loadMap(idx)`를 호출하고 `"play"`로 전환합니다. 플레이 중 `ESC`는 메뉴로, `r`은 현재 맵을 즉시 재시작합니다(디버깅 시 유용). win 상태에서 `ENTER`/`SPACE`는 메뉴로 복귀합니다.
+
+### 점프 입력 레이스 컨디션 (중요)
+
+같은 프레임에 W와 D를 누르면, D가 `love.keyboard.isDown`으로 폴링되기 전에 `keypressed("w")`가 먼저 전달될 수 있습니다. 짧게 W+D / W+A 탭으로 입력했을 때 전진 부스트가 누락되지 않도록 다음과 같이 처리합니다.
+
+1. `love.keypressed("w")`는 `jumpRequested = true` 플래그만 세팅합니다.
+2. `love.update`는 해당 프레임의 모든 키 이벤트가 도착한 *이후*에 이 플래그를 소비하여 `triggerJumpFromState()`를 호출합니다.
+3. `triggerJumpFromState`는 `isKeyHeld("d"/"a")`를 검사하는데, 이 함수는 `love.keyboard.isDown`과 `thisFrameKeys`(이번 프레임에 눌린 키를 `love.keypressed`가 채운 집합)를 OR로 결합합니다. update가 실행되는 시점에 이미 떼어진 탭도 잡아냅니다.
+4. `thisFrameKeys`는 점프 트리거 이후, `love.update`의 **끝**에서 비워집니다.
+
+점프나 입력 동작을 변경할 때는 이 순서를 반드시 유지해야 합니다. 그렇지 않으면 명세서에 적힌 W+D/W+A 버그가 다시 발생합니다.
+
+### 자동 기어오르기(auto-climb) 메커니즘
+
+명세에 따라 공중에서 장애물 옆면에 닿으면 `startClimb`이 발동됩니다. 기어오르기 감지용 충돌 박스는 **플레이어가 바라보는 방향(facing side) 쪽으로만** `CLIMB_REACH`(6 px)만큼 확장됩니다. 덕분에 W(수직) 점프는 정면 벽을 잡을 수 있지만, 자신이 서 있던 장애물의 반대쪽 끝에서 발을 내딛을 때 뒷면이 다시 장애물을 잡아채는 일은 일어나지 않습니다. 이동을 막는 충돌 검사에는 여전히 확장되지 않은 원래 박스를 사용합니다.
+
+`updateAnimation`은 기어오르기 애니메이션 동안 플레이어의 X/Y를 보간하여 캐릭터가 실제로 벽을 따라 올라가는 것처럼 보이게 만듭니다. Y는 전체 기어오르기 구간에서 선형으로 상승하고, X는 처음 75%의 프레임 동안 벽 옆면에 붙어 있다가 마지막 25%에서 윗면으로 끌어올려집니다(climb-4의 "윗면에 서기" 프레임과 일치). 마지막 프레임에서 플레이어는 장애물 윗면에 스냅되고 상태가 `"idle"`로 전환됩니다.
+
+### 카메라
+
+`updateCamera`는 플레이어를 화면의 ¼ 지점과 ¾ 지점 사이에 유지합니다. 추적 속도는 의도적으로 **공중에서 더 느리게**(`CAMERA_FOLLOW_SPEED_AIR = 140`) 설정되어 있어, 지상에서의 속도(`CAMERA_FOLLOW_SPEED_GROUND = 320`)보다 낮습니다. 이는 45° W+D / W+A 점프의 포물선 궤적이 카메라보다 빠르게 움직이는 것이 시각적으로 드러나도록 하기 위함입니다. UX적인 명확한 이유 없이 두 속도를 동일하게 만들지 마세요.
+
+### 물리(Physics) 특이사항
+
+- 단일 지면 라인이 `GROUND_Y = 360`에 있고, 장애물은 모서리 처리가 없는 AABB입니다.
+- Y축 충돌은 윗면 착지(`vy >= 0 and oldY <= obs.y + 1`)와 머리 박치기(`vy < 0`)를 구분합니다. `oldY`는 Y 이동 단계 *이전*에 캡처되므로, 이 순서를 유지해야 합니다.
+- `physicsStep`은 `player.state == "climb"`일 때 즉시 반환하며, 기어오르기 동작은 전적으로 `updateAnimation`이 구동합니다.
+- `dt`는 `love.update`에서 0.05로 클램핑되어, 프레임이 튈 때 터널링(빠른 충돌 누락)을 줄입니다.
+- `getPlayerBox()`는 `state`가 `duck`/`crawl`일 때 충돌 박스 높이를 `PLAYER_TALL_H`(52) 대신 `PLAYER_LOW_H`(24)로 줄입니다. 즉, 낮게 매달린 장애물 밑을 기어 통과하는 게임플레이가 자세 상태에 의존합니다 — 자세 전환 키(`s`)를 건드릴 때 함께 검토해야 합니다.
+
+### 맵 데이터
+
+`maps`는 맵 테이블의 평탄한 배열이며, 각 항목은 `obstacles`(AABB 배열), `goal`(깃대+깃발 사각형), `endX`(카메라 우측 한계)를 가집니다. 맵을 추가하려면 `buildMaps()`에 항목을 추가하기만 하면 되고, 메뉴는 `1..#maps`를 자동으로 나열합니다. `goal.y`는 `GROUND_Y - height`로 계산되므로 `GROUND_Y`를 변경하면 연쇄적으로 영향이 갑니다.
+
+## 컨벤션
+
+- 명세서 [JustParkour.md](JustParkour.md)는 한국어로, 코드 주석은 영어로 작성되어 있습니다. 버그를 수정할 때는 JustParkour.md의 버그/개선 사항 목록에서 해당 `[ ]` 항목도 함께 체크하세요.
+- 모든 튜닝 가능한 값은 `main.lua` 상단에 SCREAMING_SNAKE_CASE의 `local` 상수로 정의되어 있습니다. 함수 안에 매직 넘버를 흩뿌리기보다 이 상수를 조정하세요.
