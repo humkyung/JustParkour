@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-JustParkour는 LÖVE2D(11.x) 기반의 단일 파일 횡스크롤 파쿠르 게임입니다. 게임플레이 로직, 물리, 애니메이션, 입력, 그리기, 맵 데이터가 모두 [main.lua](main.lua) 한 파일에 있습니다. [JustParkour.md](JustParkour.md)는 한국어로 작성된 설계 명세서로, 조작 키, 액션 목록, 그리고 변경 작업의 기준이 되는 버그/개선 사항 체크리스트를 담고 있습니다. 의도된 동작에 대해서는 이 문서를 기준 문서로 사용하세요.
+JustParkour는 LÖVE2D(11.x) 기반의 단일 파일 횡스크롤 파쿠르 게임입니다. 게임플레이 로직, 물리, 애니메이션, 입력, 그리기는 모두 [main.lua](main.lua) 한 파일에 있고, 맵 데이터만 [Tiled 맵 에디터](https://www.mapeditor.org/) 형식인 `maps/*.tmx`에서 런타임에 로드됩니다. [readme.md](readme.md)는 한국어로 작성된 설계 명세서로, 조작 키, 액션 목록, 그리고 변경 작업의 기준이 되는 버그/개선 사항 체크리스트와 작업 내역을 담고 있습니다. 의도된 동작에 대해서는 이 문서를 기준 문서로 사용하세요.
 
 ## 실행 방법
 
@@ -79,13 +79,33 @@ luacheck main.lua -q       # 경고/에러만 출력
 - `getPlayerBox()`는 `state`가 `duck`/`crawl`일 때 충돌 박스 높이를 `PLAYER_TALL_H`(52) 대신 `PLAYER_LOW_H`(24)로 줄입니다. 즉, 낮게 매달린 장애물 밑을 기어 통과하는 게임플레이가 자세 상태에 의존합니다 — 자세 전환 키(`s`)를 건드릴 때 함께 검토해야 합니다.
 - 공중에서 `s`가 눌려 있으면 `updatePlay`는 `state`를 `"jump"` 대신 `"crawl"`/`"duck"`로 유지합니다. 덕분에 LOW hitbox가 그대로 적용되어, 장애물 위에서 기어가다 끝에서 떨어질 때 머리 위 floating 장애물에 부딪혀 `physicsStep`의 자동 기어오르기가 발동되지 않습니다. 또한 climb 검사 자체도 `state`가 `crawl`/`duck`일 때 건너뜁니다 — "기어가는 중에는 절대 climb 안 함" 규칙입니다.
 
-### 맵 데이터
+### 맵 데이터 (Tiled .tmx 직접 로딩)
 
-`maps`는 맵 테이블의 평탄한 배열이며, 각 항목은 `obstacles`(AABB 배열), `goal`(깃대+깃발 사각형), `endX`(카메라 우측 한계)를 가집니다. 맵을 추가하려면 `buildMaps()`에 항목을 추가하기만 하면 되고, 메뉴는 `1..#maps`를 자동으로 나열합니다. `goal.y`는 `GROUND_Y - height`로 계산되므로 `GROUND_Y`를 변경하면 연쇄적으로 영향이 갑니다.
+런타임의 `maps` 테이블은 `buildMaps()`가 `MAP_FILES`에 나열된 `.tmx` 파일을 순서대로 파싱해 만든 결과입니다. `.tmx`가 단일 진실 원천(single source of truth)이며 별도의 export 단계는 없습니다 — Tiled에서 `.tmx`를 편집·저장하고 게임을 재실행하면 그대로 반영됩니다.
+
+파서는 [main.lua](main.lua)의 `loadMapFromTMX` / `parseAttrs` / `hexToColor`로 구성되며, Tiled .tmx 형식 중 다음 부분 집합만 사용합니다.
+
+- `<map ... backgroundcolor="#RRGGBB">` → 맵의 `bgColor`
+- 헤더의 `<properties>` 안의 `<property name="..." value="..."/>` → `name` (문자열), `groundColor` (hex 문자열), `endX` (정수)
+- `<objectgroup name="obstacles">`의 모든 `<object .../>` → `obstacles` 배열 (AABB)
+- `<objectgroup name="goal">`의 첫 `<object .../>` → `goal` 사각형 (깃대+깃발 영역)
+
+타일셋, 타일 레이어, 폴리곤, 회전된 객체, 객체별 properties는 무시합니다. 전부 axis-aligned 사각형이라는 가정이 기존 충돌/그리기 코드와 맞물려 있습니다. Tiled 객체의 `x`, `y`는 사각형의 좌상단 픽셀 좌표이며, 이는 `physicsStep`/`drawMap`이 기대하는 좌표계와 동일하므로 별도 변환이 필요 없습니다 (예전처럼 `GROUND_Y - h`로 환산하지 마세요).
+
+새 맵을 추가하는 절차:
+
+1. Tiled에서 `maps/<이름>.tmx`를 만들고 다음을 구성합니다.
+    - 맵 background color (16진)
+    - Custom properties: `name` (문자열), `groundColor` (`#RRGGBB`), `endX` (int)
+    - Object Layer `obstacles`: 장애물 사각형들
+    - Object Layer `goal`: 깃대+깃발 영역 사각형 1개
+2. [main.lua](main.lua)의 `MAP_FILES` 배열 끝에 새 경로를 추가합니다. 메뉴는 `1..#maps`를 자동으로 나열하므로 추가 작업이 필요 없습니다.
+
+`hexToColor`는 `#RRGGBB`와 `#AARRGGBB`(앞쪽 알파 바이트는 버림)를 모두 받습니다. `goal.y`는 더 이상 `GROUND_Y - height`로 자동 계산되지 않습니다 — Tiled에서 `y` 좌표를 직접 지정하므로, `GROUND_Y`를 바꾸면 모든 `.tmx`의 obstacles/goal `y`도 함께 손봐야 합니다.
 
 ## 컨벤션
 
-- 명세서 [JustParkour.md](JustParkour.md)는 한국어로, 코드 주석은 영어로 작성되어 있습니다. 버그를 수정할 때는 JustParkour.md의 버그/개선 사항 목록에서 해당 `[ ]` 항목도 함께 체크하세요.
+- 명세서 [readme.md](readme.md)는 한글로, **새로 추가하거나 수정하는 코드 주석도 한글로 작성하세요**. 기존 영어 주석은 그대로 두며, 강제로 한글화할 필요는 없습니다. 코드 식별자(변수/함수 이름)는 영어 그대로 둡니다. 버그를 수정할 때는 readme.md의 버그/개선 사항 목록에서 해당 `[ ]` 항목도 함께 체크하세요.
 - 모든 튜닝 가능한 값은 `main.lua` 상단에 SCREAMING_SNAKE_CASE의 `local` 상수로 정의되어 있습니다. 함수 안에 매직 넘버를 흩뿌리기보다 이 상수를 조정하세요.
 ## 중요
-- 작업을 마친 후에 내용을 간략하게 명세서 [JustParkour.md](JustParkour.md)의 **작업 내용**에 날짜 포함해서 기입해주세요.
+- 작업을 마친 후에 내용을 간략하게 명세서 [readme.md](readme.md)의 **작업 내용**에 날짜 포함해서 기입해주세요.

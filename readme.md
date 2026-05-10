@@ -38,6 +38,10 @@ LÖVE2D로 만든 단일 파일 Parkour 횡스크롤 게임. 모든 로직은 [m
 	- 점프(w, w+d, w+a)후 벽 옆에 닿으면 기어오르기 자동 발동
 - 벽 위를 달리다 벽을 벗어나면 땅으로 낙하
 
+## 외부 툴
+- 타일 에디터 : Titled Version 1.12.10
+- 스프라이트 에디터
+	- Piskel(https://www.piskelapp.com/p/create/sprite/)
 ## 작업 내용
 
 - 2026-05-10: 하드코딩된 맵 데이터를 [Tiled 맵 에디터](https://www.mapeditor.org/) 호환 파일로 분리.
