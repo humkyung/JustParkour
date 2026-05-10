@@ -28,16 +28,46 @@ luacheck main.lua -q       # 경고/에러만 출력
 
 선택적 점프 효과음은 `assets/jump.wav`가 있으면 자동으로 로드되고, 없으면 `assets/jump.ogg`를 시도합니다. 둘 다 없으면 무음으로 동작합니다([main.lua:529](main.lua:529)).
 
-## 스프라이트시트 재생성
+## 스프라이트 (Piskel → 마스터 PNG 빌드 단계)
 
-`assets/spritesheet.png`는 64×64 셀로 구성된 256×256 그리드이며 레이아웃은 다음과 같습니다.
+스프라이트는 [Piskel](https://www.piskelapp.com/)로 편집한 6개의 `.piskel` 파일을 원본으로 두고, `scripts/piskel_to_spritesheet.py` 스크립트가 마스터 `assets/spritesheet.png`(256×256, 4×4 그리드, 64×64 셀)로 빌드합니다. 게임은 마스터 PNG만 로드하므로 `main.lua`의 `setupAnimations()`/`drawPlayer()`는 단순 시트 + Quad 방식 그대로입니다.
 
-- Row 0: `idle`, `run-2`, `run-3`, `run-4`
-- Row 1: `jump-1..4`
-- Row 2: `duck`, `crawl-2`, `crawl-3`, `crawl-4`
-- Row 3: `climb-1..4`
+```
+assets/piskel/
+  idle.piskel    (1 frame  → row 0, col 0)
+  run.piskel     (3 frames → row 0, cols 1..3)
+  jump.piskel    (4 frames → row 1, cols 0..3)
+  duck.piskel    (1 frame  → row 2, col 0)
+  crawl.piskel   (3 frames → row 2, cols 1..3)
+  climb.piskel   (4 frames → row 3, cols 0..3)
+```
 
-시트의 스틱맨은 **오른쪽**을 향하고 있으며, `player.direction = -1`일 때 `love.graphics.draw`에서 음수 X-스케일로 뒤집힙니다. 시트 레이아웃을 변경하면 `setupAnimations()`(행/프레임)와 `drawPlayer()`(원점 오프셋)을 함께 업데이트해야 합니다. 시트 자체를 다시 생성하려면 `scripts/gen_spritesheet.py`도 동일한 레이아웃으로 맞춰서 수정해야 합니다.
+스틱맨은 **오른쪽**을 향하고 있으며, `player.direction = -1`일 때 `love.graphics.draw`에서 음수 X-스케일로 뒤집힙니다. `drawPlayer`의 원점이 `(32, 32)`(셀 중심), 그려지는 위치가 `player.y - 32`(`player.y`는 발 위치)이므로 캐릭터는 발이 셀 하단 근처에 오도록 그립니다.
+
+### 워크플로우
+
+1. **편집**: Piskel에서 `assets/piskel/<state>.piskel`을 열어 편집·저장.
+2. **빌드**: `python scripts/piskel_to_spritesheet.py` 실행 → `assets/spritesheet.png` 갱신.
+    - 일부만 갱신할 때: `--keep-existing`을 붙이면 발견된 입력만 덮어쓰고 나머지는 기존 시트에서 보존.
+3. **검증**: `love .` 실행 후 6개 상태(idle/run/jump/duck/crawl/climb) 시각 확인.
+
+`piskel_to_spritesheet.py`는 두 가지 입력 형식을 우선순위대로 처리합니다.
+
+- 1순위: `assets/piskel/<name>.piskel` (Piskel 네이티브, 평소 워크플로우)
+- 2순위 폴백: `assets/piskel/<name>.png` (가로 strip PNG, 다른 도구에서 만든 경우)
+
+`.piskel`은 단일 chunk + 가로 strip(layout = `[[0],[1],...]`) 형태만 지원합니다. Piskel에서 단순 애니메이션을 만들면 자동으로 이 형태가 되지만, 다중 chunk나 격자 layout은 명시적 오류로 거부합니다.
+
+### 시트 레이아웃 / 프레임 수를 바꿀 때
+
+`main.lua`의 `setupAnimations()`(행/프레임 인덱스), `scripts/piskel_to_spritesheet.py`의 `LAYOUT` 상수, 그리고 .piskel/png 입력의 프레임 수가 모두 동기화되어야 합니다. `drawPlayer()`의 원점 `(32, 32)`은 셀 크기를 64에서 바꿀 때만 함께 손보면 됩니다.
+
+### 관련 보조 스크립트
+
+- `scripts/gen_spritesheet.py`: 초기 절차 생성 스틱맨으로 마스터 PNG를 만드는 폴백. 백지 상태에서 빠른 더미가 필요할 때만 사용.
+- `scripts/split_spritesheet.py`: 마스터 시트를 16개 64×64 PNG로 쪼개 `assets/piskel/cells/`에 시맨틱 이름(`idle.png`, `run-2.png`, ..., `climb-4.png`)으로 저장. Piskel에 개별 프레임으로 import하거나 다시 그릴 때 참고용.
+
+일상 워크플로우는 "Piskel 편집 → `piskel_to_spritesheet.py` → `love .`" 세 단계입니다.
 
 ## 단일 파일에서는 한눈에 보이지 않는 아키텍처 노트
 

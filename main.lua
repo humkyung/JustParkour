@@ -4,6 +4,9 @@
 --   Row 1: jump-1..jump-4
 --   Row 2: duck, crawl-2, crawl-3, crawl-4
 --   Row 3: climb-1..climb-4
+-- The master sheet is built from assets/piskel/<state>.piskel by
+-- scripts/piskel_to_spritesheet.py. Edit the .piskel files in Piskel, run the
+-- script, then launch the game; setupAnimations() reads only the master PNG.
 
 local SCREEN_W, SCREEN_H = 800, 450
 local GROUND_Y           = 360

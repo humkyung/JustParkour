@@ -52,6 +52,16 @@ LÖVE2D로 만든 단일 파일 Parkour 횡스크롤 게임. 모든 로직은 [m
 - 2026-05-10: 기어가다 머리 위 장애물에 자동 기어오르기가 발동되는 버그 수정.
     - `updatePlay` 공중 분기에서 `s` 키가 눌려 있으면 `state`를 `"jump"` 대신 `"crawl"`/`"duck"`로 유지 → LOW hitbox 보존.
     - `physicsStep` 자동 기어오르기 검사를 `state`가 `"crawl"`/`"duck"`일 때 건너뜀 (사용자 명시 요구: "기어서 지나갈 때 벽 옆면에 닿더라도 올라가지 않도록").
+- 2026-05-10: Piskel 기반 스프라이트 워크플로우 도입.
+    - `assets/piskel/` 디렉토리 추가 — 애니메이션마다 별도 `.piskel` 프로젝트와 가로 strip PNG export를 보관.
+    - `scripts/stitch_spritesheet.py` 추가 — strip 6개를 마스터 `assets/spritesheet.png`로 합치는 PIL 스크립트 (`--keep-existing` 옵션으로 부분 갱신 지원).
+    - 프레임 수와 셀 크기는 현재 그대로 유지 (256×256, 4×4 그리드, 64px 셀)이므로 `setupAnimations()`/`drawPlayer()` 변경 없음.
+    - 기존 `scripts/gen_spritesheet.py`는 더미 폴백으로만 보존.
+- 2026-05-10: (롤백) `.piskel` 런타임 로딩(A안) 시도를 모두 되돌림. `main.lua`의 `jsonDecode`/`loadPiskelStrip`/`player.sprites` 폐기, `setupAnimations()`/`drawPlayer()`/`love.load()` 모두 단일 마스터 시트(`player.spriteSheet`) 방식으로 원복. `run`/`crawl`의 frame 인덱싱도 `{2, 3, 4, 3}` (마스터 시트 col 인덱스) 그대로 복원.
+- 2026-05-10: 빌드 단계 변환(B안) 도입.
+    - `scripts/piskel_to_spritesheet.py` 신규 작성 — 6개 `.piskel`을 직접 파싱(JSON + base64 + PIL)해서 `assets/spritesheet.png`로 합칩니다. `<name>.piskel`이 없으면 `<name>.png` 가로 strip을 폴백으로 사용해, Piskel 외 도구로 만든 strip도 같은 스크립트로 처리 가능. `--keep-existing`으로 부분 갱신 지원.
+    - 기존 `scripts/stitch_spritesheet.py` 제거 — 새 스크립트가 `.png` strip 입력도 처리하므로 기능이 흡수됨.
+    - 워크플로우: Piskel에서 `.piskel` 편집/저장 → `python scripts/piskel_to_spritesheet.py` → `love .`. (게임 코드는 무변경, 마스터 PNG만 갱신)
 
 ## 개선 사항
 - [x] 기어오르기 (점프 후 장애물 옆면을 잡으면 자동 발동) 애니메이션이 보이지 않음
