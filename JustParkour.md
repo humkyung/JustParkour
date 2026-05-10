@@ -38,12 +38,24 @@ LÖVE2D로 만든 단일 파일 Parkour 횡스크롤 게임. 모든 로직은 [m
 	- 점프(w, w+d, w+a)후 벽 옆에 닿으면 기어오르기 자동 발동
 - 벽 위를 달리다 벽을 벗어나면 땅으로 낙하
 
+## 작업 내용
+
+- 2026-05-10: 하드코딩된 맵 데이터를 [Tiled 맵 에디터](https://www.mapeditor.org/) 호환 파일로 분리.
+    - 편집용 마스터: `maps/downtown.tmx`, `maps/industrial_park.tmx`, `maps/rooftops.tmx`
+    - 초기에는 게임 로딩용 `.lua` (Tiled "Export As Lua") 파일을 함께 두는 방식이었으나, 매 편집 후 export를 깜빡하면 게임에 반영되지 않는 문제가 있어 게임이 `.tmx`를 직접 파싱하도록 변경.
+    - 장애물/목표는 Object Layer의 사각형으로, 이름/배경색/지면색/endX는 맵 custom property(또는 `<map>` 태그의 backgroundcolor)로 표현.
+    - `main.lua`에 경량 .tmx 파서(`loadMapFromTMX`, `parseAttrs`)와 `hexToColor` 헬퍼 추가. 외부 라이브러리 의존성 없음.
+- 2026-05-10: 기어가다 머리 위 장애물에 자동 기어오르기가 발동되는 버그 수정.
+    - `updatePlay` 공중 분기에서 `s` 키가 눌려 있으면 `state`를 `"jump"` 대신 `"crawl"`/`"duck"`로 유지 → LOW hitbox 보존.
+    - `physicsStep` 자동 기어오르기 검사를 `state`가 `"crawl"`/`"duck"`일 때 건너뜀 (사용자 명시 요구: "기어서 지나갈 때 벽 옆면에 닿더라도 올라가지 않도록").
+
 ## 개선 사항
 - [x] 기어오르기 (점프 후 장애물 옆면을 잡으면 자동 발동) 애니메이션이 보이지 않음
 - [x] w+d 키를 누르면 앞으로 점프(상방 45도 방향으로 점프) 기능 동작하지 않음
 - [x] 기어오르기 애니메이션이 벽 옆면 제자리에서 일어남
 	- 실제 벽 옆면을 기어 올라가야 함
 - [x] w+d, w+a로 점프할때 너무 먼 거리로 점프함(점프 거리를 조금 줄여야 함)
+- [x] w, w+d, w+a로 점프할 때 assets\jump.wav 효과음 발현
 ## 버그
 - [x] 벽이 아닌 일반 평지에서도 w+d 키를 누르면 앞으로 점프(상방 45도 방향으로 점프) 기능 동작하지 않음
 - [x] w, w+d, w+a 후 벽 옆면에 닿아도 기어오르기가 자동 발동하지 않음

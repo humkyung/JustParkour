@@ -68,54 +68,108 @@ local function setupAnimations()
     end
 end
 
--- ============ map data ============
-local function buildMaps()
-    maps = {
-        {
-            name        = "Downtown",
-            bgColor     = { 0.55, 0.70, 0.88 },
-            groundColor = { 0.30, 0.32, 0.36 },
-            obstacles   = {
-                { x = 380,  y = GROUND_Y - 60,  w = 80,  h = 60 },
-                { x = 600,  y = GROUND_Y - 110, w = 90,  h = 110 },
-                { x = 820,  y = GROUND_Y - 40,  w = 160, h = 40 },
-                { x = 1080, y = GROUND_Y - 130, w = 80,  h = 130 },
-                { x = 1260, y = GROUND_Y - 80,  w = 120, h = 80 },
-            },
-            goal        = { x = 1450, y = GROUND_Y - 160, w = 16, h = 160 },
-            endX        = 1600,
-        },
-        {
-            name        = "Industrial Park",
-            bgColor     = { 0.45, 0.55, 0.65 },
-            groundColor = { 0.25, 0.27, 0.30 },
-            obstacles   = {
-                { x = 350,  y = GROUND_Y - 50,  w = 100, h = 50 },
-                { x = 520,  y = GROUND_Y - 100, w = 70,  h = 100 },
-                { x = 700,  y = GROUND_Y - 160, w = 70,  h = 160 },
-                { x = 880,  y = GROUND_Y - 100, w = 70,  h = 100 },
-                { x = 1050, y = GROUND_Y - 50,  w = 200, h = 50 },
-                { x = 1320, y = GROUND_Y - 140, w = 80,  h = 140 },
-            },
-            goal        = { x = 1500, y = GROUND_Y - 180, w = 16, h = 180 },
-            endX        = 1700,
-        },
-        {
-            name        = "Rooftops",
-            bgColor     = { 0.85, 0.55, 0.45 },
-            groundColor = { 0.35, 0.25, 0.22 },
-            obstacles   = {
-                { x = 300,  y = GROUND_Y - 90,  w = 80,  h = 90 },
-                { x = 480,  y = GROUND_Y - 140, w = 80,  h = 140 },
-                { x = 660,  y = GROUND_Y - 90,  w = 80,  h = 90 },
-                { x = 820,  y = GROUND_Y - 180, w = 90,  h = 180 },
-                { x = 1010, y = GROUND_Y - 100, w = 140, h = 100 },
-                { x = 1240, y = GROUND_Y - 60,  w = 80,  h = 60 },
-            },
-            goal        = { x = 1380, y = GROUND_Y - 200, w = 16, h = 200 },
-            endX        = 1500,
-        },
+-- ============ map data (Tiled .tmx loader) ============
+-- Ordered list of Tiled .tmx files. The .tmx is the single source of truth —
+-- edit in Tiled and the changes are picked up directly on the next launch
+-- (no "Export As Lua" step required).
+local MAP_FILES = {
+    "maps/downtown.tmx",
+    "maps/industrial_park.tmx",
+    "maps/rooftops.tmx",
+}
+
+-- Convert a "#RRGGBB" or "#AARRGGBB" hex string to LÖVE's 0..1 RGB table.
+local function hexToColor(hex)
+    if hex:sub(1, 1) == "#" then hex = hex:sub(2) end
+    if #hex == 8 then hex = hex:sub(3) end  -- drop alpha if present
+    local r = tonumber(hex:sub(1, 2), 16) or 0
+    local g = tonumber(hex:sub(3, 4), 16) or 0
+    local b = tonumber(hex:sub(5, 6), 16) or 0
+    return { r / 255, g / 255, b / 255 }
+end
+
+-- Pull XML-style key="value" attributes from a tag string into a table.
+local function parseAttrs(tag)
+    local attrs = {}
+    for k, v in tag:gmatch('([%w_]+)%s*=%s*"([^"]*)"') do
+        attrs[k] = v
+    end
+    return attrs
+end
+
+-- Minimal Tiled .tmx parser for the subset of the format we actually use:
+--   <map ... backgroundcolor="#RRGGBB">
+--     <properties>
+--       <property name="name|groundColor|endX" value="..."/>
+--     </properties>
+--     <objectgroup name="obstacles">
+--       <object x=".." y=".." width=".." height=".."/>
+--     </objectgroup>
+--     <objectgroup name="goal">
+--       <object .../>
+--     </objectgroup>
+--   </map>
+-- Tilesets, tile layers, polygons, and per-object properties are ignored —
+-- this game only uses AABB rectangles on Object Layers.
+local function loadMapFromTMX(path)
+    local content = love.filesystem.read(path)
+    if not content then
+        error("Failed to read map: " .. path)
+    end
+
+    -- backgroundcolor lives on the <map ...> tag itself.
+    local mapTag = content:match("<map[^>]*>") or ""
+    local mapAttrs = parseAttrs(mapTag)
+
+    -- Map-level <properties> appears in the header before any <objectgroup>.
+    -- Restricting the scan to the header avoids picking up per-object
+    -- <property> tags if they're ever added later.
+    local headerEnd = content:find("<objectgroup") or #content
+    local header = content:sub(1, headerEnd - 1)
+    local props = {}
+    for propTag in header:gmatch("<property%s+[^>]*>") do
+        local pa = parseAttrs(propTag)
+        if pa.name then props[pa.name] = pa.value end
+    end
+
+    local map = {
+        name        = props.name or path,
+        bgColor     = hexToColor(mapAttrs.backgroundcolor or "#000000"),
+        groundColor = hexToColor(props.groundColor or "#202020"),
+        endX        = tonumber(props.endX) or 1600,
+        obstacles   = {},
+        goal        = nil,
     }
+
+    -- Walk each <objectgroup name="...">...</objectgroup> block. Object x/y
+    -- in Tiled is the top-left of the rectangle in pixels, which matches
+    -- what physicsStep / drawMap already expect (no GROUND_Y offset).
+    for groupTag, body in content:gmatch("(<objectgroup[^>]*>)(.-)</objectgroup>") do
+        local ga = parseAttrs(groupTag)
+        for objTag in body:gmatch("<object%s+[^>]*>") do
+            local oa = parseAttrs(objTag)
+            local rect = {
+                x = tonumber(oa.x)      or 0,
+                y = tonumber(oa.y)      or 0,
+                w = tonumber(oa.width)  or 0,
+                h = tonumber(oa.height) or 0,
+            }
+            if ga.name == "obstacles" then
+                table.insert(map.obstacles, rect)
+            elseif ga.name == "goal" and not map.goal then
+                map.goal = rect
+            end
+        end
+    end
+
+    return map
+end
+
+local function buildMaps()
+    maps = {}
+    for _, path in ipairs(MAP_FILES) do
+        table.insert(maps, loadMapFromTMX(path))
+    end
 end
 
 -- ============ level loading ============
@@ -212,7 +266,13 @@ local function physicsStep(dt)
         -- side. Touching a wall in front (W, W+D, W+A) still auto-climbs, but
         -- a player who just stepped off the far edge of an obstacle won't
         -- have their trailing side reach back into the obstacle and re-grab it.
-        if not player.onGround then
+        -- Skip entirely while crawling/ducking — those are explicit "stay low"
+        -- actions that must not be hijacked into a climb (e.g. crawling off a
+        -- ledge into a slot under a low-hanging floating obstacle).
+        if not player.onGround
+           and player.state ~= "crawl"
+           and player.state ~= "duck"
+        then
             local rx, rw
             if player.direction == 1 then
                 rx = px
@@ -377,7 +437,20 @@ local function updatePlay(dt)
             local kb = love.keyboard.isDown
             if kb("d") then player.direction = 1
             elseif kb("a") then player.direction = -1 end
-            player.state = "jump"
+            -- Preserve a low-profile state (and the LOW collision box) while
+            -- airborne if S is held. Lets the player crawl off a ledge into a
+            -- narrow gap (e.g. the slot between a tall obstacle's top and a
+            -- floating obstacle's bottom) without their TALL hitbox colliding
+            -- with the overhead obstacle and triggering auto-climb.
+            if kb("s") then
+                if kb("d") or kb("a") then
+                    player.state = "crawl"
+                else
+                    player.state = "duck"
+                end
+            else
+                player.state = "jump"
+            end
         end
         if player.state ~= prevState then
             player.currentFrame = 1

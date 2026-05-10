@@ -77,6 +77,7 @@ luacheck main.lua -q       # 경고/에러만 출력
 - `physicsStep`은 `player.state == "climb"`일 때 즉시 반환하며, 기어오르기 동작은 전적으로 `updateAnimation`이 구동합니다.
 - `dt`는 `love.update`에서 0.05로 클램핑되어, 프레임이 튈 때 터널링(빠른 충돌 누락)을 줄입니다.
 - `getPlayerBox()`는 `state`가 `duck`/`crawl`일 때 충돌 박스 높이를 `PLAYER_TALL_H`(52) 대신 `PLAYER_LOW_H`(24)로 줄입니다. 즉, 낮게 매달린 장애물 밑을 기어 통과하는 게임플레이가 자세 상태에 의존합니다 — 자세 전환 키(`s`)를 건드릴 때 함께 검토해야 합니다.
+- 공중에서 `s`가 눌려 있으면 `updatePlay`는 `state`를 `"jump"` 대신 `"crawl"`/`"duck"`로 유지합니다. 덕분에 LOW hitbox가 그대로 적용되어, 장애물 위에서 기어가다 끝에서 떨어질 때 머리 위 floating 장애물에 부딪혀 `physicsStep`의 자동 기어오르기가 발동되지 않습니다. 또한 climb 검사 자체도 `state`가 `crawl`/`duck`일 때 건너뜁니다 — "기어가는 중에는 절대 climb 안 함" 규칙입니다.
 
 ### 맵 데이터
 
@@ -86,3 +87,5 @@ luacheck main.lua -q       # 경고/에러만 출력
 
 - 명세서 [JustParkour.md](JustParkour.md)는 한국어로, 코드 주석은 영어로 작성되어 있습니다. 버그를 수정할 때는 JustParkour.md의 버그/개선 사항 목록에서 해당 `[ ]` 항목도 함께 체크하세요.
 - 모든 튜닝 가능한 값은 `main.lua` 상단에 SCREAMING_SNAKE_CASE의 `local` 상수로 정의되어 있습니다. 함수 안에 매직 넘버를 흩뿌리기보다 이 상수를 조정하세요.
+## 중요
+- 작업을 마친 후에 내용을 간략하게 명세서 [JustParkour.md](JustParkour.md)의 **작업 내용**에 날짜 포함해서 기입해주세요.
