@@ -34,6 +34,17 @@ local CLIMB_REACH        = 6              -- px of grab reach beyond the player'
 local CAMERA_FOLLOW_SPEED_GROUND = 320    -- >= RUN_SPEED; ground tracking stays tight
 local CAMERA_FOLLOW_SPEED_AIR    = 140    -- << JUMP_FWD_VX; jump arc reads as a forward leap
 
+-- 모멘텀(Flow) 게이지
+local MOMENTUM_MAX            = 100     -- 게이지 최대값
+local MOMENTUM_PER_ACTION     = 20      -- 액션 1회당 충전량 (5회로 Full)
+local MOMENTUM_IDLE_GRACE     = 1.0     -- idle 후 감소 시작까지 유예 시간(초)
+local MOMENTUM_DECAY_RATE     = 40      -- 유예 후 초당 감소량
+local MOMENTUM_SPEED_MULT     = 1.2     -- Full 상태 속도 배율
+local MOMENTUM_TRAIL_COUNT    = 5       -- 네온 잔상 개수
+local MOMENTUM_TRAIL_INTERVAL = 0.05    -- 잔상 기록 간격(초)
+local CRAWL_CHARGE_DIST       = 80      -- 크롤링 이 거리(px)마다 1회 충전
+local TRAIL_COLOR             = {0.2, 0.8, 1.0}  -- 네온 시안
+
 local gameState   -- "menu" | "play" | "win"
 local camera = { x = 0 }
 local player = {}
@@ -188,6 +199,12 @@ local function loadMap(idx)
     player.animTimer  = 0
     player.direction  = 1
     player.climbTarget = nil
+    player.momentum      = 0
+    player.idleTimer     = 0
+    player.momentumFull  = false
+    player.trail         = {}
+    player.trailTimer    = 0
+    player.crawlDistAccum = 0
     camera.x          = 0
 end
 
@@ -208,6 +225,16 @@ local function isKeyHeld(key)
     -- the modifier even if the user has already released it by the time
     -- love.update runs.
     return love.keyboard.isDown(key) or thisFrameKeys[key] == true
+end
+
+local function addMomentum()
+    player.momentum = math.min(player.momentum + MOMENTUM_PER_ACTION, MOMENTUM_MAX)
+    player.momentumFull = (player.momentum >= MOMENTUM_MAX)
+    player.idleTimer = 0
+end
+
+local function momentumMult()
+    return player.momentumFull and MOMENTUM_SPEED_MULT or 1.0
 end
 
 local function startClimb(obs)
@@ -233,18 +260,19 @@ end
 -- ============ per-frame state derivation from input ============
 local function updateGroundedInput()
     local kb = love.keyboard.isDown
+    local mult = momentumMult()
     if kb("s") then
         if kb("d") then
-            player.state = "crawl"; player.direction = 1;  player.vx = CRAWL_SPEED
+            player.state = "crawl"; player.direction = 1;  player.vx = CRAWL_SPEED * mult
         elseif kb("a") then
-            player.state = "crawl"; player.direction = -1; player.vx = -CRAWL_SPEED
+            player.state = "crawl"; player.direction = -1; player.vx = -CRAWL_SPEED * mult
         else
             player.state = "duck"; player.vx = 0
         end
     elseif kb("d") then
-        player.state = "run"; player.direction = 1; player.vx = RUN_SPEED
+        player.state = "run"; player.direction = 1; player.vx = RUN_SPEED * mult
     elseif kb("a") then
-        player.state = "run"; player.direction = -1; player.vx = -RUN_SPEED
+        player.state = "run"; player.direction = -1; player.vx = -RUN_SPEED * mult
     else
         player.state = "idle"; player.vx = 0
     end
@@ -383,6 +411,7 @@ local function updateAnimation(dt)
                 player.state       = "idle"
                 player.onGround    = true
                 player.vy          = 0
+                addMomentum()
                 player.currentFrame = 1
             elseif anim.loop then
                 player.currentFrame = 1
@@ -461,6 +490,49 @@ local function updatePlay(dt)
         end
     end
 
+    -- 모멘텀: idle 감소
+    if player.state == "idle" then
+        player.idleTimer = player.idleTimer + dt
+        if player.idleTimer > MOMENTUM_IDLE_GRACE then
+            player.momentum = math.max(0, player.momentum - MOMENTUM_DECAY_RATE * dt)
+            player.momentumFull = false
+        end
+    else
+        player.idleTimer = 0
+    end
+
+    -- 모멘텀: 크롤링 거리 누적 충전
+    if player.state == "crawl" then
+        player.crawlDistAccum = player.crawlDistAccum + math.abs(player.vx) * dt
+        if player.crawlDistAccum >= CRAWL_CHARGE_DIST then
+            player.crawlDistAccum = player.crawlDistAccum - CRAWL_CHARGE_DIST
+            addMomentum()
+        end
+    else
+        player.crawlDistAccum = 0
+    end
+
+    -- 모멘텀: 잔상 수집
+    if player.momentumFull then
+        player.trailTimer = player.trailTimer + dt
+        if player.trailTimer >= MOMENTUM_TRAIL_INTERVAL then
+            player.trailTimer = player.trailTimer - MOMENTUM_TRAIL_INTERVAL
+            local quad = player.quads[player.state][player.currentFrame]
+            table.insert(player.trail, {
+                x = player.x, y = player.y,
+                direction = player.direction, quad = quad
+            })
+            if #player.trail > MOMENTUM_TRAIL_COUNT then
+                table.remove(player.trail, 1)
+            end
+        end
+    else
+        for i = #player.trail, 1, -1 do
+            table.remove(player.trail, i)
+        end
+        player.trailTimer = 0
+    end
+
     physicsStep(dt)
     updateAnimation(dt)
     updateCamera(dt)
@@ -474,16 +546,18 @@ end
 local function triggerJumpFromState()
     if not (player.onGround and player.state ~= "climb") then return end
     player.onGround  = false
+    addMomentum()
+    local mult = momentumMult()
     if isKeyHeld("d") then
         -- W+D -> forward jump at 45 degrees up-right (|vx| == |vy|),
         -- shorter range than a pure-vertical jump.
         player.direction = 1
-        player.vx        = JUMP_FWD_VX
+        player.vx        = JUMP_FWD_VX * mult
         player.vy        = JUMP_FWD_VY
     elseif isKeyHeld("a") then
         -- W+A -> backward jump at 45 degrees up-left, same shorter range.
         player.direction = -1
-        player.vx        = -JUMP_FWD_VX
+        player.vx        = -JUMP_FWD_VX * mult
         player.vy        = JUMP_FWD_VY
     else
         -- W only -> straight up jump (taller, no horizontal travel).
@@ -538,6 +612,20 @@ local function drawMap(map)
     )
 end
 
+local function drawTrail()
+    for i, t in ipairs(player.trail) do
+        local alpha = 0.15 + 0.10 * (i / #player.trail)
+        love.graphics.setColor(TRAIL_COLOR[1], TRAIL_COLOR[2], TRAIL_COLOR[3], alpha)
+        love.graphics.draw(
+            player.spriteSheet, t.quad,
+            t.x, t.y - 32,
+            0,
+            t.direction, 1,
+            32, 32
+        )
+    end
+end
+
 local function drawPlayer()
     love.graphics.setColor(1, 1, 1)
     local quad = player.quads[player.state][player.currentFrame]
@@ -555,6 +643,30 @@ local function drawHUD(map)
     love.graphics.rectangle("fill", 0, 0, SCREEN_W, 28)
     love.graphics.setColor(1, 1, 1)
     love.graphics.print(map.name, 10, 7)
+
+    -- Flow 게이지 바
+    local barX, barY, barW, barH = SCREEN_W / 2 - 60, 8, 120, 12
+    love.graphics.setColor(0.75, 0.78, 0.82)
+    love.graphics.print("FLOW", barX - 40, 7)
+    love.graphics.setColor(0.15, 0.15, 0.15)
+    love.graphics.rectangle("fill", barX, barY, barW, barH)
+    local ratio = player.momentum / MOMENTUM_MAX
+    if ratio > 0 then
+        if player.momentumFull then
+            love.graphics.setColor(TRAIL_COLOR[1], TRAIL_COLOR[2], TRAIL_COLOR[3])
+        else
+            love.graphics.setColor(0.1, 0.5, 0.7)
+        end
+        love.graphics.rectangle("fill", barX, barY, barW * ratio, barH)
+    end
+    love.graphics.setColor(0.5, 0.5, 0.5)
+    love.graphics.rectangle("line", barX, barY, barW, barH)
+    if player.momentumFull then
+        love.graphics.setColor(TRAIL_COLOR[1], TRAIL_COLOR[2], TRAIL_COLOR[3])
+        love.graphics.print("MAX!", barX + barW + 4, 7)
+    end
+
+    love.graphics.setColor(1, 1, 1)
     love.graphics.print("ESC: menu", SCREEN_W - 90, 7)
 end
 
@@ -642,6 +754,7 @@ function love.draw()
         love.graphics.push()
         love.graphics.translate(-camera.x, 0)
         drawMap(map)
+        drawTrail()
         drawPlayer()
         love.graphics.pop()
         drawHUD(map)
